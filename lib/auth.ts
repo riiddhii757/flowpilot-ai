@@ -54,10 +54,16 @@ function readSession(value?: string) {
   return userId;
 }
 
-export async function getCurrentUser() {
+export async function getSession() {
   const userId = readSession((await cookies()).get(COOKIE)?.value);
   if (!userId) return null;
-  return db.user.findUnique({ where: { id: userId }, include: { members: { include: { organization: true } } } });
+  return { userId };
+}
+
+export async function getCurrentUser() {
+  const session = await getSession();
+  if (!session) return null;
+  return db.user.findUnique({ where: { id: session.userId }, include: { members: { include: { organization: true } } } });
 }
 
 export function getRole(value: string): Role | null {
