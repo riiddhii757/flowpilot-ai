@@ -1,6 +1,6 @@
 {
   "name":"flowpilot-ai","version":"0.1.0","private":true,
-  "scripts":{"dev":"next dev","build":"prisma generate && next build","postinstall":"prisma generate","start":"next start","worker":"tsx worker.ts","db:generate":"prisma generate","db:migrate":"prisma migrate dev","db:seed":"tsx prisma/seed.ts","test":"tsx --test tests/*.test.ts"},
+  "scripts":{"dev":"next dev","build":"prisma generate && next build","postinstall":"prisma generate","start":"next start","worker":"tsx worker.ts","lint":"next lint","typecheck":"tsc --noEmit","db:generate":"prisma generate","db:migrate":"prisma migrate dev","db:seed":"tsx prisma/seed.ts","test":"tsx --test tests/*.test.ts"},
   "prisma":{"seed":"tsx prisma/seed.ts"},
   "dependencies":{"@prisma/client":"^6.15.0","@upstash/redis":"^1.35.0","bullmq":"^5.56.0","lucide-react":"^1.31.0","next":"^15.5.0","openai":"^5.23.2","react":"^19.1.0","react-dom":"^19.1.0","zod":"^3.25.76"},
   "devDependencies":{"@tailwindcss/postcss":"^4.1.0","@types/node":"^22.0.0","@types/react":"^19.1.0","@types/react-dom":"^19.1.0","prisma":"^6.15.0","tailwindcss":"^4.1.0","tsx":"^4.19.0","typescript":"^5.8.0"}
