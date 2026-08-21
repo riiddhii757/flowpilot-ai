@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import { Activity, ArrowLeft, CheckCircle2, Clock3, XCircle } from "lucide-react";
 
-type Log = { id: string; action: string; actor: string; metadata: unknown; createdAt: string };
+type Metadata = Record<string, unknown>;
+type Log = { id: string; action: string; actor: string; metadata: Metadata | null; createdAt: string };
 
 const label = (action: string) => action.replaceAll(".", " → ").replaceAll("_", " ");
 const iconFor = (action: string) => action.includes("failed") ? XCircle : action.includes("completed") ? CheckCircle2 : Clock3;
@@ -16,7 +17,7 @@ export default function ActivityPage() {
   useEffect(() => {
     fetch("/api/audit/list")
       .then(async (res) => { const body = await res.json(); if (!res.ok) throw new Error(body.error || "Unable to load activity"); return body; })
-      .then((body) => setLogs(body.logs))
+      .then((body) => setLogs(body.logs as Log[]))
       .catch((err) => setError(err instanceof Error ? err.message : "Unable to load activity"))
       .finally(() => setLoading(false));
   }, []);
