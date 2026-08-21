@@ -6,7 +6,7 @@ export async function GET() {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const membership = await db.member.findUnique({
+  const membership = await db.member.findFirst({
     where: { userId: session.userId },
     select: { organizationId: true },
   });
