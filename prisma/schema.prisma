@@ -1,0 +1,7 @@
+generator client { provider = "prisma-client-js" }
+datasource db { provider = "postgresql" url = env("DATABASE_URL") }
+model Organization { id String @id @default(cuid()); name String; createdAt DateTime @default(now()); members Member[]; workflows Workflow[]; tasks Task[]; auditLogs AuditLog[] }
+model Member { id String @id @default(cuid()); organizationId String; email String; role String @default("member"); organization Organization @relation(fields:[organizationId],references:[id],onDelete:Cascade); @@unique([organizationId,email]) }
+model Workflow { id String @id @default(cuid()); organizationId String; name String; trigger String; status String @default("active"); successRate Float @default(0); organization Organization @relation(fields:[organizationId],references:[id],onDelete:Cascade); tasks Task[] }
+model Task { id String @id @default(cuid()); organizationId String; workflowId String?; title String; status String @default("queued"); priority String @default("normal"); createdAt DateTime @default(now()); organization Organization @relation(fields:[organizationId],references:[id],onDelete:Cascade); workflow Workflow? @relation(fields:[workflowId],references:[id],onDelete:SetNull) }
+model AuditLog { id String @id @default(cuid()); organizationId String; action String; actor String; metadata Json?; createdAt DateTime @default(now()); organization Organization @relation(fields:[organizationId],references:[id],onDelete:Cascade); @@index([organizationId,createdAt]) }
