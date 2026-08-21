@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { triageRequest } from "@/lib/ai";
+import { enqueueWorkflow } from "@/lib/queue";
 
 const payloadSchema = z.object({
   organizationId: z.string().min(1),
@@ -29,12 +30,24 @@ export async function POST(request: Request) {
   try {
     const body = payloadSchema.parse(JSON.parse(raw));
     const result = await triageRequest(body.text);
+
+    const task = await db.task.create({
+      data: {
+        organizationId: body.organizationId,
+        workflowId: body.workflowId,
+        title: result.summary,
+        status: result.requiresApproval ? "pending_approval" : "queued",
+        priority: result.priority,
+      },
+    });
+
     const audit = await db.auditLog.create({
       data: {
         organizationId: body.organizationId,
         action: "ai.triage.completed",
         actor: "system",
         metadata: {
+          taskId: task.id,
           workflowId: body.workflowId ?? null,
           source: body.source,
           category: result.category,
@@ -46,7 +59,18 @@ export async function POST(request: Request) {
       },
     });
 
-    return NextResponse.json({ ok: true, decision: result, auditId: audit.id }, { status: 200 });
+    if (!result.requiresApproval) {
+      await enqueueWorkflow(task.workflowId ?? "unassigned", {
+        taskId: task.id,
+        organizationId: body.organizationId,
+        workflowId: body.workflowId,
+      });
+    }
+
+    return NextResponse.json(
+      { ok: true, taskId: task.id, decision: result, auditId: audit.id },
+      { status: 202 },
+    );
   } catch {
     return NextResponse.json({ ok: false, error: "Invalid webhook payload" }, { status: 400 });
   }
