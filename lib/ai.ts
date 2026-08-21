@@ -1,4 +1,4 @@
-import OpenAI from "openai";
+import { GoogleGenAI, Type } from "@google/genai";
 import { z } from "zod";
 
 const resultSchema = z.object({
@@ -9,14 +9,44 @@ const resultSchema = z.object({
   requiresApproval: z.boolean(),
 });
 
-export async function triageRequest(text: string) {
-  if (!process.env.OPENAI_API_KEY) {
-    return resultSchema.parse({ category: "support", priority: "normal", summary: text.slice(0, 120), suggestedAction: "Route to the support queue", requiresApproval: false });
-  }
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  const response = await client.responses.create({
-    model: process.env.OPENAI_MODEL ?? "gpt-5-mini",
-    input: `Classify this business request. Return JSON only with category, priority, summary, suggestedAction, requiresApproval. Request: ${text}`,
+const fallbackResult = (text: string) =>
+  resultSchema.parse({
+    category: "support",
+    priority: "normal",
+    summary: text.slice(0, 120),
+    suggestedAction: "Route to the support queue",
+    requiresApproval: false,
   });
-  return resultSchema.parse(JSON.parse(response.output_text));
+
+export async function triageRequest(text: string) {
+  const apiKey = process.env.GEMINI_API_KEY;
+
+  // AI is intentionally optional so local development and production
+  // deployments remain usable when no AI key is configured.
+  if (!apiKey) return fallbackResult(text);
+
+  const ai = new GoogleGenAI({ apiKey });
+  const response = await ai.models.generateContent({
+    model: process.env.GEMINI_MODEL ?? "gemini-3-flash-preview",
+    contents: `Classify this business request. Return JSON only with category, priority, summary, suggestedAction, requiresApproval. Request: ${text}`,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          category: { type: Type.STRING, enum: ["support", "sales", "finance", "other"] },
+          priority: { type: Type.STRING, enum: ["low", "normal", "high", "urgent"] },
+          summary: { type: Type.STRING },
+          suggestedAction: { type: Type.STRING },
+          requiresApproval: { type: Type.BOOLEAN },
+        },
+        required: ["category", "priority", "summary", "suggestedAction", "requiresApproval"],
+      },
+    },
+  });
+
+  const output = response.text?.trim();
+  if (!output) return fallbackResult(text);
+
+  return resultSchema.parse(JSON.parse(output));
 }
