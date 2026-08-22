@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-
-const integrationSchema = z.object({ provider: z.enum(["slack","email","webhook","crm","google-calendar","calendly","zapier"]), enabled: z.boolean() });
-export async function GET(){return NextResponse.json({ok:true,integrations:[{provider:"slack",enabled:false},{provider:"email",enabled:true},{provider:"webhook",enabled:true},{provider:"crm",enabled:false},{provider:"google-calendar",enabled:false},{provider:"calendly",enabled:false},{provider:"zapier",enabled:false}]})}
-export async function POST(request:Request){const body=integrationSchema.parse(await request.json());return NextResponse.json({ok:true,integration:body},{status:201})}
+import { getCurrentUser } from "@/lib/auth";
+import { db } from "@/lib/db";
+const integrationSchema=z.object({provider:z.enum(["slack","email","webhook","crm","google-calendar","google-gmail","calendly","zapier"]),enabled:z.boolean(),webhookUrl:z.string().url().optional()});
+export async function GET(){const user=await getCurrentUser();if(!user||!user.members[0])return NextResponse.json({error:"Authentication required"},{status:401});const rows=await db.integration.findMany({where:{organizationId:user.members[0].organizationId}});const providers=["slack","email","webhook","crm","google-calendar","google-gmail","calendly","zapier"];return NextResponse.json({ok:true,integrations:providers.map(provider=>{const row=rows.find(x=>x.provider===provider);return {provider,enabled:!!row?.enabled,accountEmail:row?.accountEmail||null}})});}
+export async function POST(request:Request){const user=await getCurrentUser();if(!user||!user.members[0])return NextResponse.json({error:"Authentication required"},{status:401});const body=integrationSchema.parse(await request.json());const organizationId=user.members[0].organizationId;const integration=await db.integration.upsert({where:{organizationId_provider:{organizationId,provider:body.provider}},create:{userId:user.id,organizationId,provider:body.provider,enabled:body.enabled,webhookUrl:body.webhookUrl},update:{enabled:body.enabled,webhookUrl:body.webhookUrl}});return NextResponse.json({ok:true,integration:{provider:integration.provider,enabled:integration.enabled,accountEmail:integration.accountEmail}});}
