@@ -8,68 +8,62 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
+  id String @id @default(cuid())
+  email String @unique
   passwordHash String
-  name         String
-  createdAt    DateTime @default(now())
-  members      Member[]
+  name String
+  createdAt DateTime @default(now())
+  members Member[]
 }
-
 model Organization {
-  id        String      @id @default(cuid())
-  name      String
-  createdAt DateTime    @default(now())
-  members   Member[]
+  id String @id @default(cuid())
+  name String
+  createdAt DateTime @default(now())
+  members Member[]
   workflows Workflow[]
-  tasks     Task[]
+  tasks Task[]
   auditLogs AuditLog[]
 }
-
 model Member {
-  id             String       @id @default(cuid())
+  id String @id @default(cuid())
   organizationId String
-  userId         String
-  email          String
-  role           String       @default("member")
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-
+  userId String
+  email String
+  role String @default("member")
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   @@unique([organizationId, email])
   @@unique([organizationId, userId])
 }
-
 model Workflow {
-  id             String       @id @default(cuid())
+  id String @id @default(cuid())
   organizationId String
-  name           String
-  trigger        String
-  status         String       @default("active")
-  successRate    Float        @default(0)
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  tasks          Task[]
+  name String
+  trigger String
+  status String @default("active")
+  successRate Float @default(0)
+  scheduledAt DateTime?
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  tasks Task[]
 }
-
 model Task {
-  id             String    @id @default(cuid())
+  id String @id @default(cuid())
   organizationId String
-  workflowId     String?
-  title          String
-  status         String    @default("queued")
-  priority       String    @default("normal")
-  createdAt      DateTime  @default(now())
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  workflow       Workflow? @relation(fields: [workflowId], references: [id], onDelete: SetNull)
+  workflowId String?
+  title String
+  status String @default("queued")
+  priority String @default("normal")
+  createdAt DateTime @default(now())
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  workflow Workflow? @relation(fields: [workflowId], references: [id], onDelete: SetNull)
 }
-
 model AuditLog {
-  id             String   @id @default(cuid())
+  id String @id @default(cuid())
   organizationId String
-  action         String
-  actor          String
-  metadata       Json?
-  createdAt      DateTime @default(now())
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-
+  action String
+  actor String
+  metadata Json?
+  createdAt DateTime @default(now())
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   @@index([organizationId, createdAt])
 }
