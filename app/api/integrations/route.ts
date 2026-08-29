@@ -13,6 +13,7 @@ const providers = ["slack", "email", "webhook", "crm", "google-calendar", "googl
 
 function isRealConnection(provider: string, row: { enabled: boolean; accessToken: string | null; refreshToken: string | null; webhookUrl: string | null } | undefined) {
   if (!row?.enabled) return false;
+  if (provider === "slack") return Boolean(row.accessToken);
   if (provider === "google-calendar" || provider === "google-gmail") return Boolean(row.accessToken && row.refreshToken);
   if (provider === "zapier") return Boolean(row.webhookUrl);
   return false;
