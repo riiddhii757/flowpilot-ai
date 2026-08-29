@@ -4,15 +4,16 @@ import { z } from "zod";
 import { getCurrentUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { decrypt, encrypt } from "@/lib/oauth";
+import { getHubSpotAccessToken, hubSpotApi } from "@/lib/hubspot";
 
 const integrationSchema = z.object({
   provider: z.enum(["slack", "email", "webhook", "crm", "google-calendar", "google-gmail", "calendly", "zapier"]),
   enabled: z.boolean().optional(),
   webhookUrl: z.string().url().optional(),
-  action: z.enum(["connect", "send-test", "create-webhook", "send-test-webhook"]).optional(),
+  action: z.enum(["connect", "send-test", "create-webhook", "send-test-webhook", "test-crm"]).optional(),
 });
 const providers = ["slack", "email", "webhook", "crm", "google-calendar", "google-gmail", "calendly", "zapier"] as const;
-type IntegrationRow = { id: string; enabled: boolean; accessToken: string | null; refreshToken: string | null; webhookUrl: string | null; accountEmail?: string | null };
+type IntegrationRow = { id: string; enabled: boolean; accessToken: string | null; refreshToken: string | null; webhookUrl: string | null; accountEmail?: string | null; tokenExpiresAt: Date | null };
 
 function resendKey() { return process.env.RESEND_API_KEY?.trim() || null; }
 
@@ -37,6 +38,11 @@ async function isRealConnection(provider: string, row: IntegrationRow | undefine
   if (provider === "zapier") return Boolean(row.webhookUrl);
   if (provider === "email") return Boolean(row.accessToken);
   if (provider === "webhook") return Boolean(row.webhookUrl && row.accessToken);
+  if (provider === "crm") {
+    if (!row.accessToken || !row.refreshToken) return false;
+    const token = await getHubSpotAccessToken(row);
+    return Boolean(token);
+  }
   return false;
 }
 
@@ -58,6 +64,20 @@ export async function POST(request: Request) {
   const body = integrationSchema.parse(await request.json());
   const organizationId = user.members[0].organizationId;
 
+  if (body.provider === "crm" && body.action === "test-crm") {
+    const integration = await db.integration.findUnique({ where: { organizationId_provider: { organizationId, provider: "crm" } } });
+    if (!integration?.enabled || !integration.accessToken || !integration.refreshToken) {
+      return NextResponse.json({ error: "HubSpot is not connected." }, { status: 400 });
+    }
+    const result = await hubSpotApi(integration, "/crm/objects/2026-03/contacts?limit=1");
+    if (!result.ok) {
+      return NextResponse.json({ error: "HubSpot rejected the connection. Please reconnect HubSpot." }, { status: result.status || 502 });
+    }
+    const total = typeof result.data?.total === "number" ? result.data.total : undefined;
+    await db.auditLog.create({ data: { organizationId, action: "hubspot.connection_tested", actor: user.id, metadata: { hubId: integration.webhookUrl, contactsVisible: total ?? null } } });
+    return NextResponse.json({ ok: true, tested: true, message: "HubSpot connection verified successfully.", contactsVisible: total ?? null });
+  }
+
   if (body.provider === "webhook" && body.action === "create-webhook") {
     const secret = randomBytes(32).toString("base64url");
     const existing = await db.integration.findUnique({ where: { organizationId_provider: { organizationId, provider: "webhook" } } });
@@ -71,26 +91,15 @@ export async function POST(request: Request) {
 
   if (body.provider === "webhook" && body.action === "send-test-webhook") {
     const integration = await db.integration.findUnique({ where: { organizationId_provider: { organizationId, provider: "webhook" } } });
-    if (!integration?.enabled || !integration.accessToken || !integration.webhookUrl) {
-      return NextResponse.json({ error: "Webhook is not connected." }, { status: 400 });
-    }
+    if (!integration?.enabled || !integration.accessToken || !integration.webhookUrl) return NextResponse.json({ error: "Webhook is not connected." }, { status: 400 });
     let secret: string;
     try { secret = decrypt(integration.accessToken); } catch { return NextResponse.json({ error: "Webhook signing secret is unavailable." }, { status: 500 }); }
     const payload = JSON.stringify({ event: "flowpilot.test", message: "FlowPilot webhook end-to-end test", timestamp: new Date().toISOString() });
     const signature = createHmac("sha256", secret).update(payload).digest("hex");
     const supplied = Buffer.from(signature, "hex");
     const expected = Buffer.from(createHmac("sha256", secret).update(payload).digest("hex"), "hex");
-    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
-      return NextResponse.json({ error: "Webhook signature verification failed." }, { status: 500 });
-    }
-    await db.auditLog.create({
-      data: {
-        organizationId,
-        action: "webhook.received",
-        actor: "flowpilot-test",
-        metadata: { integrationId: integration.id, payload },
-      },
-    });
+    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return NextResponse.json({ error: "Webhook signature verification failed." }, { status: 500 });
+    await db.auditLog.create({ data: { organizationId, action: "webhook.received", actor: "flowpilot-test", metadata: { integrationId: integration.id, payload } } });
     return NextResponse.json({ ok: true, tested: true, signed: true, verified: true, message: "Webhook test event was signed with HMAC-SHA256 and verified successfully." });
   }
 
@@ -123,6 +132,20 @@ export async function DELETE(request: Request) {
   if (!row) return NextResponse.json({ ok: true, disconnected: true });
   if (parsed.data.provider === "slack" && row.accessToken) { try { await fetch("https://slack.com/api/auth.revoke", { method: "POST", headers: { Authorization: `Bearer ${decrypt(row.accessToken)}` } }); } catch {} }
   if ((parsed.data.provider === "google-calendar" || parsed.data.provider === "google-gmail") && row.accessToken) { try { await fetch("https://oauth2.googleapis.com/revoke", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ token: decrypt(row.accessToken) }) }); } catch {} }
+  if (parsed.data.provider === "crm" && row.refreshToken) {
+    try {
+      const config = process.env.HUBSPOT_CLIENT_ID?.trim() && process.env.HUBSPOT_CLIENT_SECRET?.trim()
+        ? { clientId: process.env.HUBSPOT_CLIENT_ID.trim(), clientSecret: process.env.HUBSPOT_CLIENT_SECRET.trim() }
+        : null;
+      if (config) {
+        await fetch("https://api.hubapi.com/oauth/2026-03/token/revoke", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ client_id: config.clientId, client_secret: config.clientSecret, token: decrypt(row.refreshToken), token_type_hint: "refresh_token" }),
+        });
+      }
+    } catch {}
+  }
   await db.integration.delete({ where: { organizationId_provider: { organizationId, provider: parsed.data.provider } } });
   return NextResponse.json({ ok: true, disconnected: true, provider: parsed.data.provider });
 }
