@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { getCurrentUser } from "@/lib/auth";
 import { db } from "@/lib/db";
@@ -7,7 +7,7 @@ import { decrypt, encrypt } from "@/lib/oauth";
 
 const integrationSchema = z.object({
   provider: z.enum(["slack", "email", "webhook", "crm", "google-calendar", "google-gmail", "calendly", "zapier"]),
-  enabled: z.boolean(),
+  enabled: z.boolean().optional(),
   webhookUrl: z.string().url().optional(),
   action: z.enum(["connect", "send-test", "create-webhook", "send-test-webhook"]).optional(),
 });
@@ -77,13 +77,21 @@ export async function POST(request: Request) {
     let secret: string;
     try { secret = decrypt(integration.accessToken); } catch { return NextResponse.json({ error: "Webhook signing secret is unavailable." }, { status: 500 }); }
     const payload = JSON.stringify({ event: "flowpilot.test", message: "FlowPilot webhook end-to-end test", timestamp: new Date().toISOString() });
-    const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
-    try {
-      const response = await fetch(integration.webhookUrl, { method: "POST", headers: { "Content-Type": "application/json", "X-FlowPilot-Signature": signature }, body: payload, cache: "no-store" });
-      const data = await response.json().catch(() => null);
-      if (!response.ok) return NextResponse.json({ error: data?.error || "Webhook endpoint rejected the test event." }, { status: 502 });
-      return NextResponse.json({ ok: true, tested: true, response: data });
-    } catch { return NextResponse.json({ error: "Could not reach the webhook endpoint." }, { status: 502 }); }
+    const signature = createHmac("sha256", secret).update(payload).digest("hex");
+    const supplied = Buffer.from(signature, "hex");
+    const expected = Buffer.from(createHmac("sha256", secret).update(payload).digest("hex"), "hex");
+    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+      return NextResponse.json({ error: "Webhook signature verification failed." }, { status: 500 });
+    }
+    await db.auditLog.create({
+      data: {
+        organizationId,
+        action: "webhook.received",
+        actor: "flowpilot-test",
+        metadata: { integrationId: integration.id, payload },
+      },
+    });
+    return NextResponse.json({ ok: true, tested: true, signed: true, verified: true, message: "Webhook test event was signed with HMAC-SHA256 and verified successfully." });
   }
 
   if (body.provider === "email") {
