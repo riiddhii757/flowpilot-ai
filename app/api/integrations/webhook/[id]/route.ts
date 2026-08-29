@@ -17,7 +17,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   if (!provided) return NextResponse.json({ error: "Missing X-FlowPilot-Signature" }, { status: 401 });
 
   let secret: string;
-  try { secret = decrypt(integration.accessToken); } catch { return NextResponse.json({ error: "Webhook credential unavailable" }, { status: 500 }); }
+  try {
+    secret = decrypt(integration.accessToken);
+  } catch {
+    return NextResponse.json({ error: "Webhook credential unavailable" }, { status: 500 });
+  }
+
   const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
   const a = Buffer.from(provided.replace(/^sha256=/, ""), "hex");
   const b = Buffer.from(expected, "hex");
@@ -26,13 +31,19 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 
   let payload: unknown = rawBody;
-  try { payload = JSON.parse(rawBody); } catch {}
+  try {
+    payload = JSON.parse(rawBody);
+  } catch {}
+
   await db.auditLog.create({
     data: {
       organizationId: integration.organizationId,
       action: "webhook.received",
       actor: "external-webhook",
-      metadata: { integrationId: integration.id, payload },
+      metadata: {
+        integrationId: integration.id,
+        payload: typeof payload === "string" ? payload : JSON.stringify(payload),
+      },
     },
   });
 
