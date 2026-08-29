@@ -20,16 +20,22 @@ type IntegrationRow = {
 };
 
 async function verifyResendApiKey() {
-  const key = process.env.RESEND_API_KEY;
-  if (!key) return false;
+  const key = process.env.RESEND_API_KEY?.trim();
+  if (!key) return { ok: false, reason: "missing" as const };
+
   try {
-    const response = await fetch("https://api.resend.com/domains?limit=1", {
-      headers: { Authorization: `Bearer ${key}` },
-      cache: "no-store",
-    });
-    return response.ok;
+    // Do not use /domains for verification: Resend Sending Access keys are
+    // intentionally limited to sending and may not read account resources.
+    // A lightweight authenticated request to the API-keys endpoint is not
+    // suitable either because it also requires account-management access.
+    // For now, validate the credential format and let the real send endpoint
+    // perform the permission check when the user sends a test email.
+    if (!key.startsWith("re_") || key.length < 20) {
+      return { ok: false, reason: "invalid-format" as const };
+    }
+    return { ok: true, reason: "configured" as const };
   } catch {
-    return false;
+    return { ok: false, reason: "invalid" as const };
   }
 }
 
@@ -38,7 +44,7 @@ async function isRealConnection(provider: string, row: IntegrationRow | undefine
   if (provider === "slack") return Boolean(row.accessToken);
   if (provider === "google-calendar" || provider === "google-gmail") return Boolean(row.accessToken && row.refreshToken);
   if (provider === "zapier") return Boolean(row.webhookUrl);
-  if (provider === "email") return Boolean(row.accessToken && (await verifyResendApiKey()));
+  if (provider === "email") return Boolean(row.accessToken && (await verifyResendApiKey()).ok);
   return false;
 }
 
@@ -68,9 +74,12 @@ export async function POST(request: Request) {
   const organizationId = user.members[0].organizationId;
 
   if (body.provider === "email") {
-    const verified = await verifyResendApiKey();
-    if (!verified) {
-      return NextResponse.json({ error: "Resend is not configured or the RESEND_API_KEY is invalid." }, { status: 400 });
+    const verification = await verifyResendApiKey();
+    if (!verification.ok) {
+      const message = verification.reason === "missing"
+        ? "RESEND_API_KEY is not available to this Vercel deployment. Check the Production environment variable and redeploy."
+        : "RESEND_API_KEY does not look like a valid Resend API key.";
+      return NextResponse.json({ error: message }, { status: 400 });
     }
 
     const integration = await db.integration.upsert({
