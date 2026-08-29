@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createHmac, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { getCurrentUser } from "@/lib/auth";
 import { db } from "@/lib/db";
@@ -44,11 +44,11 @@ export async function GET() {
   const user = await getCurrentUser();
   if (!user || !user.members[0]) return NextResponse.json({ error: "Authentication required" }, { status: 401 });
   const rows = await db.integration.findMany({ where: { organizationId: user.members[0].organizationId } });
-  const integrations = providers.map((provider) => {
+  const integrations = await Promise.all(providers.map(async (provider) => {
     const row = rows.find((item) => item.provider === provider);
-    const verified = isRealConnection(provider, row);
+    const verified = await isRealConnection(provider, row);
     return { provider, enabled: verified, accountEmail: verified ? row?.accountEmail || (provider === "email" ? process.env.RESEND_FROM_EMAIL || null : null) : null, webhookUrl: provider === "webhook" && verified ? row?.webhookUrl : null };
-  });
+  }));
   return NextResponse.json({ ok: true, integrations });
 }
 
