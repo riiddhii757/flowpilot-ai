@@ -7,6 +7,7 @@ const integrationSchema = z.object({
   provider: z.enum(["slack", "email", "webhook", "crm", "google-calendar", "google-gmail", "calendly", "zapier"]),
   enabled: z.boolean(),
   webhookUrl: z.string().url().optional(),
+  action: z.enum(["connect", "send-test"]).optional(),
 });
 
 const providers = ["slack", "email", "webhook", "crm", "google-calendar", "google-gmail", "calendly", "zapier"] as const;
@@ -19,24 +20,34 @@ type IntegrationRow = {
   accountEmail?: string | null;
 };
 
-async function verifyResendApiKey() {
-  const key = process.env.RESEND_API_KEY?.trim();
-  if (!key) return { ok: false, reason: "missing" as const };
+function resendKey() {
+  return process.env.RESEND_API_KEY?.trim() || null;
+}
 
-  try {
-    // Do not use /domains for verification: Resend Sending Access keys are
-    // intentionally limited to sending and may not read account resources.
-    // A lightweight authenticated request to the API-keys endpoint is not
-    // suitable either because it also requires account-management access.
-    // For now, validate the credential format and let the real send endpoint
-    // perform the permission check when the user sends a test email.
-    if (!key.startsWith("re_") || key.length < 20) {
-      return { ok: false, reason: "invalid-format" as const };
-    }
-    return { ok: true, reason: "configured" as const };
-  } catch {
-    return { ok: false, reason: "invalid" as const };
+async function sendResendTestEmail(to: string) {
+  const key = resendKey();
+  if (!key) return { ok: false, message: "RESEND_API_KEY is not available to this Vercel deployment." };
+  const from = process.env.RESEND_FROM_EMAIL?.trim() || "onboarding@resend.dev";
+
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${key}`,
+    },
+    body: JSON.stringify({
+      from: `FlowPilot <${from}>`,
+      to: [to],
+      subject: "FlowPilot Email Integration Test",
+      html: "<h2>FlowPilot Email is working</h2><p>This test confirms that FlowPilot can send email through Resend.</p>",
+    }),
+  });
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    return { ok: false, message: data?.message || "Resend rejected the test email.", status: response.status };
   }
+  return { ok: true, id: data?.id || null };
 }
 
 async function isRealConnection(provider: string, row: IntegrationRow | undefined) {
@@ -44,7 +55,7 @@ async function isRealConnection(provider: string, row: IntegrationRow | undefine
   if (provider === "slack") return Boolean(row.accessToken);
   if (provider === "google-calendar" || provider === "google-gmail") return Boolean(row.accessToken && row.refreshToken);
   if (provider === "zapier") return Boolean(row.webhookUrl);
-  if (provider === "email") return Boolean(row.accessToken && (await verifyResendApiKey()).ok);
+  if (provider === "email") return Boolean(row.accessToken);
   return false;
 }
 
@@ -74,32 +85,24 @@ export async function POST(request: Request) {
   const organizationId = user.members[0].organizationId;
 
   if (body.provider === "email") {
-    const verification = await verifyResendApiKey();
-    if (!verification.ok) {
-      const message = verification.reason === "missing"
-        ? "RESEND_API_KEY is not available to this Vercel deployment. Check the Production environment variable and redeploy."
-        : "RESEND_API_KEY does not look like a valid Resend API key.";
-      return NextResponse.json({ error: message }, { status: 400 });
+    const action = body.action || "connect";
+    if (action === "send-test") {
+      const result = await sendResendTestEmail(user.email);
+      if (!result.ok) return NextResponse.json({ error: result.message }, { status: result.status || 400 });
+
+      const integration = await db.integration.upsert({
+        where: { organizationId_provider: { organizationId, provider: "email" } },
+        create: { userId: user.id, organizationId, provider: "email", enabled: true, accessToken: "resend-env", accountEmail: user.email },
+        update: { enabled: true, accessToken: "resend-env", accountEmail: user.email },
+      });
+      return NextResponse.json({ ok: true, sent: true, emailId: result.id, integration: { provider: integration.provider, enabled: true, accountEmail: integration.accountEmail } });
     }
 
-    const integration = await db.integration.upsert({
-      where: { organizationId_provider: { organizationId, provider: "email" } },
-      create: {
-        userId: user.id,
-        organizationId,
-        provider: "email",
-        enabled: true,
-        accessToken: "resend-env",
-        accountEmail: process.env.RESEND_FROM_EMAIL || null,
-      },
-      update: {
-        enabled: true,
-        accessToken: "resend-env",
-        accountEmail: process.env.RESEND_FROM_EMAIL || null,
-      },
-    });
-
-    return NextResponse.json({ ok: true, integration: { provider: integration.provider, enabled: true, accountEmail: integration.accountEmail } });
+    const key = resendKey();
+    if (!key || !key.startsWith("re_") || key.length < 20) {
+      return NextResponse.json({ error: "RESEND_API_KEY is missing or invalid in the deployed environment." }, { status: 400 });
+    }
+    return NextResponse.json({ ok: true, requiresTestEmail: true, message: "Credentials are configured. Send a real test email to finish connecting Email." });
   }
 
   if (body.provider !== "zapier") {
