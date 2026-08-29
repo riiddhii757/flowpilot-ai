@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { getCurrentUser } from "@/lib/auth";
 import { db } from "@/lib/db";
@@ -9,7 +9,7 @@ const integrationSchema = z.object({
   provider: z.enum(["slack", "email", "webhook", "crm", "google-calendar", "google-gmail", "calendly", "zapier"]),
   enabled: z.boolean(),
   webhookUrl: z.string().url().optional(),
-  action: z.enum(["connect", "send-test", "create-webhook"]).optional(),
+  action: z.enum(["connect", "send-test", "create-webhook", "send-test-webhook"]).optional(),
 });
 const providers = ["slack", "email", "webhook", "crm", "google-calendar", "google-gmail", "calendly", "zapier"] as const;
 type IntegrationRow = { id: string; enabled: boolean; accessToken: string | null; refreshToken: string | null; webhookUrl: string | null; accountEmail?: string | null };
@@ -69,6 +69,23 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, integration: { provider: "webhook", enabled: true, webhookUrl: endpoint }, secret });
   }
 
+  if (body.provider === "webhook" && body.action === "send-test-webhook") {
+    const integration = await db.integration.findUnique({ where: { organizationId_provider: { organizationId, provider: "webhook" } } });
+    if (!integration?.enabled || !integration.accessToken || !integration.webhookUrl) {
+      return NextResponse.json({ error: "Webhook is not connected." }, { status: 400 });
+    }
+    let secret: string;
+    try { secret = decrypt(integration.accessToken); } catch { return NextResponse.json({ error: "Webhook signing secret is unavailable." }, { status: 500 }); }
+    const payload = JSON.stringify({ event: "flowpilot.test", message: "FlowPilot webhook end-to-end test", timestamp: new Date().toISOString() });
+    const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+    try {
+      const response = await fetch(integration.webhookUrl, { method: "POST", headers: { "Content-Type": "application/json", "X-FlowPilot-Signature": signature }, body: payload, cache: "no-store" });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) return NextResponse.json({ error: data?.error || "Webhook endpoint rejected the test event." }, { status: 502 });
+      return NextResponse.json({ ok: true, tested: true, response: data });
+    } catch { return NextResponse.json({ error: "Could not reach the webhook endpoint." }, { status: 502 }); }
+  }
+
   if (body.provider === "email") {
     if (body.action === "send-test") {
       const result = await sendResendTestEmail(user.email);
@@ -96,19 +113,8 @@ export async function DELETE(request: Request) {
   const organizationId = user.members[0].organizationId;
   const row = await db.integration.findUnique({ where: { organizationId_provider: { organizationId, provider: parsed.data.provider } } });
   if (!row) return NextResponse.json({ ok: true, disconnected: true });
-
-  if (parsed.data.provider === "slack" && row.accessToken) {
-    try {
-      await fetch("https://slack.com/api/auth.revoke", { method: "POST", headers: { Authorization: `Bearer ${decrypt(row.accessToken)}` } });
-    } catch {}
-  }
-
-  if ((parsed.data.provider === "google-calendar" || parsed.data.provider === "google-gmail") && row.accessToken) {
-    try {
-      await fetch("https://oauth2.googleapis.com/revoke", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ token: decrypt(row.accessToken) }) });
-    } catch {}
-  }
-
+  if (parsed.data.provider === "slack" && row.accessToken) { try { await fetch("https://slack.com/api/auth.revoke", { method: "POST", headers: { Authorization: `Bearer ${decrypt(row.accessToken)}` } }); } catch {} }
+  if ((parsed.data.provider === "google-calendar" || parsed.data.provider === "google-gmail") && row.accessToken) { try { await fetch("https://oauth2.googleapis.com/revoke", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ token: decrypt(row.accessToken) }) }); } catch {} }
   await db.integration.delete({ where: { organizationId_provider: { organizationId, provider: parsed.data.provider } } });
   return NextResponse.json({ ok: true, disconnected: true, provider: parsed.data.provider });
 }
